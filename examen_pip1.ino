@@ -1,5 +1,5 @@
 #include <LiquidCrystal.h>
-
+ 
 int counter = 0;
 const int botonPin = 6;
 int botonEstado = HIGH;
