@@ -1,80 +1,162 @@
 #include <LiquidCrystal.h>
 
-int counter = 0;
+// LCD
+const int rs = 9, en = 8, d4 = 5, d5 = 4, d6 = 3, d7 = 2;
+LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
+
+// Semáforo
+const int verdePin = 13;
+const int amarilloPin = 12;
+const int rojoPin = 11;
+const int buzzer = 7;
 const int botonPin = 6;
-int botonEstado = HIGH;
-int estadoReciente;
 
-LiquidCrystal lcd_1(9, 8, 5, 4, 3, 2);
+// Sensores de proximidad (HC-SR04)
+const int trigPin1 = A0;  // Sensor 1 Trigger
+const int echoPin1 = A1;  // Sensor 1 Echo
+const int trigPin2 = A2;  // Sensor 2 Trigger
+const int echoPin2 = A3;  // Sensor 2 Echo
 
-// Pin assignments for LEDs and Buzzer
-const int greenLedPin = 13;
-const int yellowLedPin = 12;
-const int redLedPin = 11;
-const int blueLedPin = 10;
-const int buzzerPin = 7;
-
-String message = "Press the button!!!!!!             ";  // Add spaces for smooth looping
-int scrollIndex = 0;
-unsigned long lastScrollTime = 0;
-const int scrollDelay = 50; // Time between scroll updates
+// Variables de estado
+int state = 0;  // 0: Verde, 1: Amarillo, 2: Rojo
+int secondsRemaining = 10;
+unsigned long previousMillis = 0;
+unsigned long buzzerMillis = 0;
+unsigned long proximityMillis = 0;
+bool botonPresionado = false;
+bool proximityAlarmActive = false;
+bool cruzando = false;  // Nueva variable para controlar el estado de cruce
 
 void setup() {
-  lcd_1.begin(16, 2);
+  lcd.begin(16, 2);
+  pinMode(verdePin, OUTPUT);
+  pinMode(amarilloPin, OUTPUT);
+  pinMode(rojoPin, OUTPUT);
+  pinMode(buzzer, OUTPUT);
+  pinMode(botonPin, INPUT);
+  pinMode(trigPin1, OUTPUT);
+  pinMode(echoPin1, INPUT);
+  pinMode(trigPin2, OUTPUT);
+  pinMode(echoPin2, INPUT);
 
-  pinMode(botonPin, INPUT_PULLUP);
-  pinMode(greenLedPin, OUTPUT);
-  pinMode(yellowLedPin, OUTPUT);
-  pinMode(redLedPin, OUTPUT);
-  pinMode(blueLedPin, OUTPUT);
-  pinMode(buzzerPin, OUTPUT);
-
-  // Show the message normally for 1 second
-  lcd_1.clear();
-  lcd_1.setCursor(0, 0);
-  lcd_1.print("Press the button!");
-  lcd_1.setCursor(0, 1);
-  lcd_1.print(counter); // Show counter initially
-  delay(1000); // Wait before scrolling starts
+  // Estado inicial: Verde encendido
+  digitalWrite(verdePin, HIGH);
+  digitalWrite(amarilloPin, LOW);
+  digitalWrite(rojoPin, LOW);
+  
+  lcd.setCursor(0, 0);
+  lcd.print("Estado: VERDE");
+  lcd.setCursor(0, 1);
+  lcd.print("SIGUIENTE: 10s");
 }
 
 void loop() {
-  // Handle scrolling independently
-  if (millis() - lastScrollTime >= scrollDelay) {
-    lastScrollTime = millis();
-    lcd_1.setCursor(0, 0);
-    lcd_1.print(message.substring(scrollIndex, scrollIndex + 16)); // Show 16 chars
+  unsigned long currentMillis = millis();
 
-    scrollIndex++;  
-    if (scrollIndex > message.length() - 16) {
-      scrollIndex = 0; // Restart scrolling
+  // Detectar proximidad con ambos sensores
+  long distance1 = getDistance(trigPin1, echoPin1);
+  long distance2 = getDistance(trigPin2, echoPin2);
+
+  // Alarma de proximidad (solo si no se ha presionado el botón y no está cruzando)
+  if (((distance1 > 0 && distance1 <= 20) || (distance2 > 0 && distance2 <= 20)) && !botonPresionado && !cruzando) {
+    if (!proximityAlarmActive) {
+      proximityAlarmActive = true;
+      proximityMillis = currentMillis;
+    }
+    if (currentMillis - proximityMillis >= 500) {  // Alarma cada 0.5s
+      tone(buzzer, 2000, 100);  // Tono alto y corto para proximidad
+      proximityMillis = currentMillis;
+    }
+  } else {
+    proximityAlarmActive = false;  // Desactivar si no hay movimiento o está cruzando
+  }
+
+  // Detectar si se presiona el botón
+  if (digitalRead(botonPin) == HIGH) {
+    if (!botonPresionado) {  // Solo cambia estado al presionarlo por primera vez
+      botonPresionado = true;
+      proximityAlarmActive = false;  // Desactivar alarma de proximidad
+      lcd.setCursor(0, 1);
+      lcd.print("Esperando...    ");
     }
   }
 
-  // Blink LEDs
-  digitalWrite(greenLedPin, millis() / 500 % 2);  // Green LED blinks every 500ms
-  digitalWrite(yellowLedPin, millis() / 750 % 2); // Yellow LED blinks every 750ms
-  digitalWrite(redLedPin, millis() / 1000 % 2);   // Red LED blinks every 1000ms
-  digitalWrite(blueLedPin, millis() / 1250 % 2);  // Blue LED blinks every 1250ms
+  // Control del semáforo
+  if (currentMillis - previousMillis >= 1000) {
+    previousMillis = currentMillis;
 
-  // Check button press in real-time
-  botonEstado = digitalRead(botonPin);
-  if (botonEstado == LOW && estadoReciente == HIGH) {
-    counter++;  
-
-    // Make the buzzer sound for 0.5 seconds
-    tone(buzzerPin, 1000);  // Play sound at 1 kHz
-    delay(50);              // Duration of sound (500ms)
-    noTone(buzzerPin);       // Stop the sound
-
-    // Update counter display
-    lcd_1.setCursor(0, 1);  
-    lcd_1.print("       "); // Clear previous number
-    lcd_1.setCursor(0, 1);
-    lcd_1.print(counter);
-    
-    delay(200); // Debounce to avoid multiple counts on a single press
+    if (secondsRemaining > 0) {
+      secondsRemaining--;
+    } else {
+      cambiarEstado();
+    }
+    updateLCD();
   }
 
-  estadoReciente = botonEstado;
+  // Alarma de cruce (solo en rojo y si el botón fue presionado)
+  if (state == 2 && botonPresionado && currentMillis - buzzerMillis >= 1000) {
+    cruzando = true;  // Activar estado de cruce
+    buzzerMillis = currentMillis;
+    tone(buzzer, 1000, 200);  // Tono diferente para cruce
+  } else if (state != 2) {
+    cruzando = false;  // Desactivar estado de cruce cuando no está en rojo
+  }
+}
+
+// Función para medir distancia con un sensor ultrasónico
+long getDistance(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  
+  long duration = pulseIn(echoPin, HIGH);
+  long distance = duration * 0.034 / 2;  // Convertir a cm
+  return distance;
+}
+
+void cambiarEstado() {
+  if (state == 0) {  // Verde → Amarillo
+    digitalWrite(verdePin, LOW);
+    digitalWrite(amarilloPin, HIGH);
+    lcd.setCursor(0, 0);
+    lcd.print("Estado: AMARILLO   ");
+    secondsRemaining = 5;
+    state = 1;
+  } 
+  else if (state == 1) {  // Amarillo → Rojo
+    digitalWrite(amarilloPin, LOW);
+    digitalWrite(rojoPin, HIGH);
+    lcd.setCursor(0, 0);
+    lcd.print("AVANCE AHORA!    ");
+    secondsRemaining = 10;
+    state = 2;
+  } 
+  else if (state == 2) {  // Rojo → Verde
+    digitalWrite(rojoPin, LOW);
+    digitalWrite(verdePin, HIGH);
+    lcd.setCursor(0, 0);
+    lcd.print("Estado: VERDE    ");
+    secondsRemaining = 10;
+    state = 0;
+    botonPresionado = false;  // Resetear el estado del botón
+    proximityAlarmActive = false;
+    cruzando = false;  // Resetear estado de cruce
+  }
+}
+
+void updateLCD() {
+  lcd.setCursor(0, 1);
+  if (state == 2) {
+    lcd.print("Solo Peaton     ");
+  } else {
+    lcd.print("SIGUIENTE: ");
+    if (secondsRemaining > 0) {
+      lcd.print(secondsRemaining);
+      lcd.print("s      ");
+    } else {
+      lcd.print("       ");
+    }
+  }
 }
